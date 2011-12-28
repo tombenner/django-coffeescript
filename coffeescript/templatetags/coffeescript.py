@@ -101,3 +101,80 @@ def coffeescript(path):
             return path
 
     return output_path[len(STATIC_ROOT):].replace(os.sep, '/').lstrip("/")
+
+
+@register.tag("coffeescripts")
+def coffeescripts(parser, token):
+    nodelist = parser.parse(("endcoffeescripts",))
+    parser.delete_first_token()
+    return Coffeescripts(token, nodelist)
+
+class Coffeescripts(Node):
+
+    def __init__(self, token, nodelist):
+        self.token = token
+        self.nodelist = nodelist
+
+    def compile(self, output_path, input_paths):
+
+        try:
+            STATIC_ROOT = settings.STATIC_ROOT
+        except AttributeError:
+            STATIC_ROOT = settings.MEDIA_ROOT
+
+        output_directory = os.path.join(STATIC_ROOT, COFFEESCRIPT_OUTPUT_DIR, os.path.dirname(output_path))
+        full_path = os.path.join(STATIC_ROOT, output_path)
+        hashed_mtime = get_hashed_mtime(full_path)
+        base_filename = os.path.split(output_path)[-1]
+
+        output_path = os.path.join(output_directory, "%s-cache.js" % base_filename)
+
+        if os.path.exists(output_path):
+          output_mtime = os.path.getmtime(output_path)
+          compilation_necessary = False
+          for input_path in input_paths:
+            input_path += ".coffee"
+            input_path = os.path.join(STATIC_ROOT, input_path)
+            if os.path.getmtime(input_path) > output_mtime:
+              compilation_necessary = True
+              break
+        else:
+          compilation_necessary = True
+
+        if compilation_necessary:
+          if os.path.exists(output_path):
+            os.remove(output_path)
+          concatenated_source = ""
+          for input_path in input_paths:
+            input_path += ".coffee"
+            full_path = os.path.join(STATIC_ROOT, input_path)
+            filename = os.path.split(full_path)[-1]
+            source_file = open(full_path)
+            concatenated_source += source_file.read()+"\n"
+            source_file.close()
+
+          args = shlex.split("%s -c -s -p" % COFFEESCRIPT_EXECUTABLE)
+          p = subprocess.Popen(args, stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+          out, errors = p.communicate(concatenated_source)
+          if out:
+            if not os.path.exists(output_directory):
+              os.makedirs(output_directory)
+            compiled_file = open(output_path, "w+")
+            compiled_file.write(out)
+            compiled_file.close()
+          elif errors:
+            logger.error(errors)
+            return output_path
+        output_path = output_path[len(STATIC_ROOT):].replace(os.sep, '/').lstrip("/")
+        return output_path
+
+    def render(self, context):
+        token_list = self.token.split_contents()
+        output_path = token_list[1].strip('"')
+        content = self.nodelist.render(context)
+        input_paths = content.split("\n")
+        input_paths = [path.strip() for path in input_paths]
+        input_paths = filter(None, input_paths)
+        output_path = self.compile(output_path, input_paths)
+        return output_path
